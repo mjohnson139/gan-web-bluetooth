@@ -17,6 +17,11 @@
       "import": "./dist/esm/native.mjs",
       "require": "./dist/cjs/native.cjs"
     },
+    "./simulation": {
+      "types": "./dist/types/simulation/index.d.ts",
+      "import": "./dist/esm/simulation.mjs",
+      "require": "./dist/cjs/simulation.cjs"
+    },
     "./package.json": "./package.json"
   },
   "scripts": {

@@ -203,11 +203,41 @@ could not resolve so the UI can say so rather than failing at connect.
 Pass a `NativeMacAddressProvider` to `connectGanCubeNative` to ask the user
 directly as a last resort.
 
-### Testing without a cube
+### Running without a cube
 
-`SimulatedTransport` replays recorded frames through the real decrypt-and-parse
-path, so protocol behaviour can be tested in node — and an app can still run
-where BLE is absent, which on React Native means Expo Go and the web build.
+`gan-web-bluetooth/simulation` builds a cube that isn't there. It is a genuine
+connection over a genuine Gen2 encrypter and driver, and every frame it emits is
+bit-packed and AES-encrypted the way a cube sends it — nothing above the
+transport is stubbed, so a demo, a test or an app driving it exercises the same
+decrypt → parse → `events$` path that hardware does.
+
+```ts
+import { createSimulatedGanCube } from 'gan-web-bluetooth/simulation';
+
+const cube = await createSimulatedGanCube();
+cube.connection.events$.subscribe(console.log);
+
+// It answers commands, so an app's usual introduction just works.
+await cube.connection.sendCubeCommand({ type: 'REQUEST_HARDWARE' });
+await cube.connection.sendCubeCommand({ type: 'REQUEST_FACELETS' });
+
+await cube.turns("R U R' U'");  // four MOVE events, in order
+await cube.sendGyro({ x: 0, y: 0, z: 0, w: 1 });
+```
+
+`turn('F2')` emits **two** events, because the protocol has no half turn — the
+vocabulary is six faces and two directions, and nothing else. Moves before the
+first `sendFacelets()` are ignored, exactly as a real cube's are: serial numbers
+mean nothing until the driver knows where the cube started.
+
+It does not model cube state. `sendFacelets()` always reports solved, because
+encoding an arbitrary position means a cube model, and that does not belong in a
+BLE library.
+
+It is a separate entry point so that an app shipping to a phone does not pull
+frame builders it will never call into its bundle.
+
+For a recorded session, drop to the transport directly:
 
 ```ts
 import { SimulatedTransport, createGanCubeConnection, createEncrypter, createDriver } from 'gan-web-bluetooth';
