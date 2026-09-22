@@ -217,9 +217,12 @@ import { createSimulatedGanCube } from 'gan-web-bluetooth/simulation';
 const cube = await createSimulatedGanCube();
 cube.connection.events$.subscribe(console.log);
 
-await cube.sendHardware();
-await cube.sendFacelets();      // the cube's answer to REQUEST_FACELETS
+// It answers commands, so an app's usual introduction just works.
+await cube.connection.sendCubeCommand({ type: 'REQUEST_HARDWARE' });
+await cube.connection.sendCubeCommand({ type: 'REQUEST_FACELETS' });
+
 await cube.turns("R U R' U'");  // four MOVE events, in order
+await cube.sendGyro({ x: 0, y: 0, z: 0, w: 1 });
 ```
 
 `turn('F2')` emits **two** events, because the protocol has no half turn — the

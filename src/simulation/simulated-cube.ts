@@ -16,11 +16,37 @@ import {
 const FACES = 'URFDLB';
 
 /**
+ * A transport that reports the commands written through it.
+ *
+ * `SimulatedTransport` records writes and nothing more, which is right for
+ * replaying a capture. A cube, though, *answers*: ask a real one for its
+ * hardware and a HARDWARE frame comes back unprompted. Without this a consumer
+ * connects, sends the three introduction commands every app sends, and sits
+ * there with empty fields — which is exactly how this was found.
+ */
+class RespondingTransport extends SimulatedTransport {
+
+    onCommand: ((data: Uint8Array) => void) | null = null;
+
+    override async write(data: Uint8Array): Promise<void> {
+        await super.write(data);
+        this.onCommand?.(data);
+    }
+
+}
+
+/**
  * A cube that isn't there.
  *
  * `SimulatedTransport` has always been exported, but on its own it is a socket
  * with nothing to plug into it: a caller holds a transport and has no way to
  * produce a byte sequence the driver will accept. This is the other half.
+ *
+ * It answers commands the way a cube does: `REQUEST_HARDWARE`,
+ * `REQUEST_FACELETS`, `REQUEST_BATTERY` and `REQUEST_RESET` each produce the
+ * frame a real cube would send back, so an app that connects and introduces
+ * itself gets a populated UI without knowing it is talking to nothing. The
+ * `send*` methods below are for driving it directly, unprompted.
  *
  * What it is **not** is a fake connection. It builds a genuine
  * `GanCubeTransportConnection` over a genuine Gen2 encrypter and a genuine Gen2
@@ -56,13 +82,13 @@ interface SimulatedGanCube {
     /** Turn each move of a sequence in order, e.g. `"R U R' U'"`. */
     turns(moves: string): Promise<void>;
 
-    /** Report the solved state, as a cube answers `REQUEST_FACELETS`. */
+    /** Report the solved state, unprompted. Sent automatically on a request. */
     sendFacelets(): Promise<void>;
 
-    /** Report a battery level, 0–100. */
+    /** Report a battery level, 0–100. Sent automatically on a request. */
     sendBattery(level?: number): Promise<void>;
 
-    /** Report hardware identity and whether the gyroscope is present. */
+    /** Report hardware identity and gyro support. Sent automatically on a request. */
     sendHardware(): Promise<void>;
 
     /** Report an orientation. Components are the usual −1…1; velocity is −7…7. */
@@ -127,7 +153,7 @@ async function createSimulatedGanCube(options: SimulatedGanCubeOptions = {}): Pr
     var gyroSupported = options.gyroSupported ?? true;
     var batteryLevel = options.batteryLevel ?? 87;
 
-    var transport = new SimulatedTransport({ deviceName, deviceMAC });
+    var transport = new RespondingTransport({ deviceName, deviceMAC });
     var encrypter = createEncrypter(2, deviceMAC, deviceName);
     var driver = createDriver(2);
     var connection = await createGanCubeConnection(transport, encrypter, driver);
@@ -165,6 +191,36 @@ async function createSimulatedGanCube(options: SimulatedGanCubeOptions = {}): Pr
         }
     };
 
+    var sendFacelets = () => deliver(gen2SolvedFaceletsFrame(serial));
+    var sendBattery = (level?: number) => deliver(gen2BatteryFrame(level ?? batteryLevel));
+    var sendHardware = () => deliver(gen2HardwareFrame(hardwareName, gyroSupported));
+
+    /*
+     * Answer the cube's four commands.
+     *
+     * The command byte is read back out of the *encrypted* write, through the
+     * same encrypter, so this exercises the outbound half of the pipeline too —
+     * a broken `sendCommandMessage` fails here rather than passing silently.
+     *
+     * The reply is deferred a turn of the event loop so that `sendCubeCommand()`
+     * resolves before its answer arrives, which is the order a caller sees from
+     * real hardware. Delivering it synchronously inside the write would let an
+     * app depend on an ordering the radio will never give it.
+     */
+    transport.onCommand = (data: Uint8Array) => {
+        var command = encrypter.decrypt(new Uint8Array(data))[0];
+        setTimeout(() => {
+            switch (command) {
+                case 0x04: void sendFacelets(); break;
+                case 0x05: void sendHardware(); break;
+                case 0x09: void sendBattery(); break;
+                // RESET tells the cube to call where it is now solved, and it
+                // reports the new state unprompted.
+                case 0x0A: void sendFacelets(); break;
+            }
+        }, 0);
+    };
+
     return {
 
         connection,
@@ -177,17 +233,9 @@ async function createSimulatedGanCube(options: SimulatedGanCubeOptions = {}): Pr
             }
         },
 
-        async sendFacelets(): Promise<void> {
-            await deliver(gen2SolvedFaceletsFrame(serial));
-        },
-
-        async sendBattery(level?: number): Promise<void> {
-            await deliver(gen2BatteryFrame(level ?? batteryLevel));
-        },
-
-        async sendHardware(): Promise<void> {
-            await deliver(gen2HardwareFrame(hardwareName, gyroSupported));
-        },
+        sendFacelets,
+        sendBattery,
+        sendHardware,
 
         async sendGyro(
             quaternion: { x: number; y: number; z: number; w: number },

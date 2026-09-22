@@ -58,6 +58,31 @@ describe('a simulated cube', () => {
         expect(events.find((e) => e.type == 'BATTERY')).toMatchObject({ batteryLevel: 42 });
     });
 
+    it('answers the commands an app sends on connect', async () => {
+        var { cube, events } = await cubeWithEvents();
+
+        // Exactly what every app does on connect, and what nothing answered
+        // before: the command goes out encrypted and comes back decoded.
+        await cube.connection.sendCubeCommand({ type: 'REQUEST_HARDWARE' });
+        await cube.connection.sendCubeCommand({ type: 'REQUEST_FACELETS' });
+        await cube.connection.sendCubeCommand({ type: 'REQUEST_BATTERY' });
+        await new Promise((resolve) => setTimeout(resolve, 5));
+
+        expect(events.map((e) => e.type).sort()).toEqual(['BATTERY', 'FACELETS', 'HARDWARE']);
+    });
+
+    it('does not answer before the command has been sent', async () => {
+        var { cube, events } = await cubeWithEvents();
+
+        // The reply is deferred by a turn of the event loop, so the promise a
+        // caller awaits resolves first — the order real hardware gives.
+        await cube.connection.sendCubeCommand({ type: 'REQUEST_BATTERY' });
+        expect(events).toHaveLength(0);
+
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        expect(events.map((e) => e.type)).toEqual(['BATTERY']);
+    });
+
     it('turns a face', async () => {
         var { cube, events } = await cubeWithEvents();
         await cube.sendFacelets();
