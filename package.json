@@ -1,21 +1,33 @@
 {
   "name": "gan-web-bluetooth",
   "version": "3.0.2",
-  "description": "Library for interaction with GAN Smart Timers and GAN Smart Cubes using Web Bluetooth API",
+  "description": "Library for interaction with GAN Smart Timers and GAN Smart Cubes over Bluetooth, from a browser or from React Native",
   "private": false,
   "types": "./dist/types/index.d.ts",
   "module": "./dist/esm/index.mjs",
   "main": "./dist/cjs/index.cjs",
   "exports": {
-    "types": "./dist/types/index.d.ts",
-    "import": "./dist/esm/index.mjs",
-    "require": "./dist/cjs/index.cjs"
+    ".": {
+      "types": "./dist/types/index.d.ts",
+      "import": "./dist/esm/index.mjs",
+      "require": "./dist/cjs/index.cjs"
+    },
+    "./native": {
+      "types": "./dist/types/native/index.d.ts",
+      "import": "./dist/esm/native.mjs",
+      "require": "./dist/cjs/native.cjs"
+    },
+    "./package.json": "./package.json"
   },
   "scripts": {
     "clean": "rm -rf dist/",
     "compile:bundles": "rollup -c",
     "compile:types": "tsc -p tsconfig.types.json",
-    "build": "npm run clean && npm run compile:types && npm run compile:bundles"
+    "build": "npm run clean && npm run compile:types && npm run compile:bundles",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc -p tsconfig.json",
+    "prepare": "npm run build"
   },
   "keywords": [
     "GAN",
@@ -29,7 +41,9 @@
     "Web Bluetooth",
     "Cubing",
     "Speedcubing",
-    "Rubik's Cube"
+    "Rubik's Cube",
+    "React Native",
+    "BLE"
   ],
   "author": "Andy Fedotov <andy.fedotov@gmail.com>",
   "license": "MIT",
@@ -43,11 +57,12 @@
     "rxjs": ">= 7"
   },
   "devDependencies": {
-    "@types/node": "^22.5.0",
-    "@types/aes-js": "^3.1.4",
     "@rollup/plugin-typescript": "^11.1.6",
+    "@types/aes-js": "^3.1.4",
+    "@types/node": "^22.5.0",
     "rollup": "^4.21.0",
-    "typescript": "^5.5.4"
+    "typescript": "^5.5.4",
+    "vitest": "^2.1.9"
   },
   "files": [
     "dist",

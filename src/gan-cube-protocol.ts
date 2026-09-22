@@ -184,95 +184,14 @@ interface GanProtocolDriver {
 /** Calculate sum of all numbers in array */
 const sum: (arr: Array<number>) => number = arr => arr.reduce((a, v) => a + v, 0);
 
-/**
- * Implementation of classic command/response connection with GAN Smart Cube device
+/*
+ * `GanCubeClassicConnection` used to live here. It has been split in two:
+ * `gan-cube-connection.ts` holds the platform-free pipeline it was mostly made
+ * of, and the Web Bluetooth plumbing it wrapped is now one transport among
+ * several under `transports/`. Everything below this line — the message view and
+ * the three protocol drivers — is unchanged from upstream and deliberately kept
+ * that way, so a new GAN generation can be merged without touching a diff.
  */
-class GanCubeClassicConnection implements GanCubeConnection, GanCubeRawConnection {
-
-    device: BluetoothDeviceWithMAC;
-    commandCharacteristic: BluetoothRemoteGATTCharacteristic;
-    stateCharacteristic: BluetoothRemoteGATTCharacteristic;
-
-    encrypter: GanCubeEncrypter;
-    driver: GanProtocolDriver;
-
-    events$: Subject<GanCubeEvent>;
-
-    private constructor(
-        device: BluetoothDeviceWithMAC,
-        commandCharacteristic: BluetoothRemoteGATTCharacteristic,
-        stateCharacteristic: BluetoothRemoteGATTCharacteristic,
-        encrypter: GanCubeEncrypter,
-        driver: GanProtocolDriver
-    ) {
-        this.device = device;
-        this.commandCharacteristic = commandCharacteristic;
-        this.stateCharacteristic = stateCharacteristic;
-        this.encrypter = encrypter;
-        this.driver = driver;
-        this.events$ = new Subject<GanCubeEvent>();
-    }
-
-    public static async create(
-        device: BluetoothDeviceWithMAC,
-        commandCharacteristic: BluetoothRemoteGATTCharacteristic,
-        stateCharacteristic: BluetoothRemoteGATTCharacteristic,
-        encrypter: GanCubeEncrypter,
-        driver: GanProtocolDriver
-    ): Promise<GanCubeConnection> {
-        var conn = new GanCubeClassicConnection(device, commandCharacteristic, stateCharacteristic, encrypter, driver);
-        conn.device.addEventListener('gattserverdisconnected', conn.onDisconnect);
-        conn.stateCharacteristic.addEventListener('characteristicvaluechanged', conn.onStateUpdate);
-        await conn.stateCharacteristic.startNotifications();
-        return conn;
-    }
-
-    get deviceName(): string {
-        return this.device.name || "GAN-XXXX";
-    }
-
-    get deviceMAC(): string {
-        return this.device.mac || "00:00:00:00:00:00";
-    }
-
-    async sendCommandMessage(message: Uint8Array): Promise<void> {
-        var encryptedMessage = this.encrypter.encrypt(message);
-        return this.commandCharacteristic.writeValue(encryptedMessage);
-    }
-
-    onStateUpdate = async (evt: Event) => {
-        var characteristic = evt.target as BluetoothRemoteGATTCharacteristic;
-        var eventMessage = characteristic.value;
-        if (eventMessage && eventMessage.byteLength >= 16) {
-            var decryptedMessage = this.encrypter.decrypt(new Uint8Array(eventMessage.buffer));
-            var cubeEvents = await this.driver.handleStateEvent(this, decryptedMessage);
-            cubeEvents.forEach(e => this.events$.next(e));
-        }
-    }
-
-    onDisconnect = async (): Promise<any> => {
-        this.device.removeEventListener('gattserverdisconnected', this.onDisconnect);
-        this.stateCharacteristic.removeEventListener('characteristicvaluechanged', this.onStateUpdate);
-        this.events$.next({ timestamp: now(), type: "DISCONNECT" });
-        this.events$.unsubscribe();
-        return this.stateCharacteristic.stopNotifications().catch(() => { });
-    }
-
-    async sendCubeCommand(command: GanCubeCommand): Promise<void> {
-        var commandMessage = this.driver.createCommandMessage(command);
-        if (commandMessage) {
-            return this.sendCommandMessage(commandMessage);
-        }
-    }
-
-    async disconnect(): Promise<void> {
-        await this.onDisconnect();
-        if (this.device.gatt?.connected) {
-            this.device.gatt?.disconnect();
-        }
-    }
-
-}
 
 /**
  * View for binary protocol messages allowing to retrieve from message arbitrary length bit words
@@ -1117,14 +1036,23 @@ class GanGen4ProtocolDriver implements GanProtocolDriver {
 export type {
     BluetoothDeviceWithMAC,
     GanCubeConnection,
+    GanCubeRawConnection,
     GanCubeEvent,
+    GanCubeEventMessage,
+    GanCubeMoveEvent,
+    GanCubeFaceletsEvent,
+    GanCubeGyroEvent,
+    GanCubeBatteryEvent,
+    GanCubeHardwareEvent,
+    GanCubeDisconnectEvent,
+    GanCubeState,
     GanCubeCommand,
     GanCubeMove,
     GanProtocolDriver
 };
 
 export {
-    GanCubeClassicConnection,
+    GanProtocolMessageView,
     GanGen2ProtocolDriver,
     GanGen3ProtocolDriver,
     GanGen4ProtocolDriver

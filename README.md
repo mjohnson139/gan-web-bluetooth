@@ -1,4 +1,4 @@
-## Use of GAN Smart Timers & Smart Cubes via Web Bluetooth API
+## Use of GAN Smart Timers & Smart Cubes via Web Bluetooth and React Native
 
 This library is designed for easy interaction with GAN Smart Timers and Smart Cubes 
 on the platforms that support [Web Bluetooth API](https://github.com/WebBluetoothCG/web-bluetooth/blob/main/implementation-status.md).
@@ -133,3 +133,88 @@ function to accomplish such procedure. You can look into the mentioned sample ap
 and this [Jupyter notebook](https://github.com/afedotov/scipy-notebooks/blob/main/ts-linregress.ipynb) for visualisation
 of such approach.
 
+
+## React Native
+
+This fork adds a **transport seam** so the same protocol code drives a cube from
+a phone as well as from a browser. The three protocol drivers, the encrypters and
+the bit-level message view are untouched — they were already pure computation
+over `Uint8Array`, and the only thing standing between them and React Native was
+`navigator.bluetooth`.
+
+```
+    protocol drivers · encrypters · message view     ← unchanged, runs anywhere
+    ────────────────────────────────────────────
+    createGanCubeConnection(transport, …)            ← platform-free pipeline
+    ────────────────────────────────────────────
+    GanCubeTransport                                 ← the seam
+    ────────────────────────────────────────────
+    WebBluetoothTransport │ NativeBleTransport │ SimulatedTransport
+```
+
+`connectGanCube()` is unchanged in signature and behaviour; existing browser code
+needs no edits.
+
+### Connecting from React Native
+
+Install [`react-native-ble-plx`](https://github.com/dotintent/react-native-ble-plx)
+in your app — this library does not depend on it, and talks to it structurally so
+any version works. **A development build is required**: BLE is a native module
+and is not present in Expo Go.
+
+```ts
+import { BleManager } from 'react-native-ble-plx';
+import { scanForGanCubes, connectGanCubeNative } from 'gan-web-bluetooth/native';
+
+const manager = new BleManager();
+
+const stopScan = scanForGanCubes(manager, async (result) => {
+  if (!result.mac) return;            // see the note on iOS below
+  stopScan();
+  const conn = await connectGanCubeNative(result);
+  conn.events$.subscribe(console.log);
+  await conn.sendCubeCommand({ type: 'REQUEST_HARDWARE' });
+  await conn.sendCubeCommand({ type: 'REQUEST_FACELETS' });
+  await conn.sendCubeCommand({ type: 'REQUEST_BATTERY' });
+});
+```
+
+From the returned `GanCubeConnection` onwards, nothing is platform-specific — it
+is the same object `connectGanCube()` returns.
+
+### The iOS MAC address constraint
+
+GAN salts its encryption key with the cube's MAC address, so without one there is
+no connection at all. Android exposes the MAC as `device.id`. **iOS does not**:
+CoreBluetooth replaces it with a random per-app UUID and no API will ever return
+the real address.
+
+The only route on iOS is the advertisement, which GAN populates with the MAC and
+which `react-native-ble-plx` surfaces as `device.manufacturerData` **on scan
+results only**. A `Device` obtained any other way — from a stored id, from a
+reconnect — generally has no manufacturer data.
+
+**This constrains your UI, not just your networking code.** A flow that lists
+cubes, discards the scan results and reconnects by id later cannot work on iOS.
+Keep the scan result, or keep the `mac` it resolved. `scanForGanCubes` resolves
+it at scan time for exactly this reason, and reports `mac: null` for a cube it
+could not resolve so the UI can say so rather than failing at connect.
+
+Pass a `NativeMacAddressProvider` to `connectGanCubeNative` to ask the user
+directly as a last resort.
+
+### Testing without a cube
+
+`SimulatedTransport` replays recorded frames through the real decrypt-and-parse
+path, so protocol behaviour can be tested in node — and an app can still run
+where BLE is absent, which on React Native means Expo Go and the web build.
+
+```ts
+import { SimulatedTransport, createGanCubeConnection, createEncrypter, createDriver } from 'gan-web-bluetooth';
+
+const transport = new SimulatedTransport({ deviceMAC: 'AB:12:34:56:78:9A' });
+const conn = await createGanCubeConnection(transport, createEncrypter(2, 'AB:12:34:56:78:9A'), createDriver(2));
+await transport.replay(recordedFrames);   // frames as the cube sent them, encrypted
+```
+
+Run the suite with `npm test`.
