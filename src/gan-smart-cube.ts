@@ -1,16 +1,14 @@
 
 import * as def from './gan-cube-definitions';
-import { GanGen2CubeEncrypter, GanGen3CubeEncrypter, GanGen4CubeEncrypter } from './gan-cube-encrypter';
+import { createGanCubeConnection } from './gan-cube-connection';
+import { createDriver, createEncrypter, generationForService, GAN_SERVICES } from './gan-cube-generations';
+import { WebBluetoothTransport } from './transports/web-bluetooth';
 import {
     BluetoothDeviceWithMAC,
     GanCubeConnection,
     GanCubeCommand,
     GanCubeEvent,
-    GanCubeMove,
-    GanCubeClassicConnection,
-    GanGen2ProtocolDriver,
-    GanGen3ProtocolDriver,
-    GanGen4ProtocolDriver
+    GanCubeMove
 } from './gan-cube-protocol';
 
 /** Iterate over all known GAN cube CICs to find Manufacturer Specific Data */
@@ -74,6 +72,12 @@ type MacAddressProvider = (device: BluetoothDevice, isFallbackCall?: boolean) =>
 
 /**
  * Initiate new connection with the GAN Smart Cube device
+ *
+ * The signature and behaviour are unchanged; internally the Web Bluetooth
+ * plumbing now lives in `WebBluetoothTransport` and the protocol pipeline in
+ * `createGanCubeConnection`, so the same cube can be driven from React Native or
+ * from a recording without any of this file being involved.
+ *
  * @param customMacAddressProvider Optional custom provider for cube MAC address
  * @returns Object representing connection API and state
  */
@@ -87,7 +91,7 @@ async function connectGanCube(customMacAddressProvider?: MacAddressProvider): Pr
                 { namePrefix: "MG" },
                 { namePrefix: "AiCube" }
             ],
-            optionalServices: [def.GAN_GEN2_SERVICE, def.GAN_GEN3_SERVICE, def.GAN_GEN4_SERVICE],
+            optionalServices: GAN_SERVICES,
             optionalManufacturerData: def.GAN_CIC_LIST
         }
     );
@@ -101,49 +105,25 @@ async function connectGanCube(customMacAddressProvider?: MacAddressProvider): Pr
         throw new Error('Unable to determine cube MAC address, connection is not possible!');
     device.mac = mac;
 
-    // Create encryption salt from MAC address bytes placed in reverse order
-    var salt = new Uint8Array(device.mac.split(/[:-\s]+/).map((c) => parseInt(c, 16)).reverse());
-
     // Connect to GATT and get device primary services
     var gatt = await device.gatt!.connect();
     var services = await gatt.getPrimaryServices();
 
-    var conn: GanCubeConnection | null = null;
-
     // Resolve type of connected cube device and setup appropriate encryption / protocol driver
     for (let service of services) {
-        let serviceUUID = service.uuid.toLowerCase();
-        if (serviceUUID == def.GAN_GEN2_SERVICE) {
-            let commandCharacteristic = await service.getCharacteristic(def.GAN_GEN2_COMMAND_CHARACTERISTIC);
-            let stateCharacteristic = await service.getCharacteristic(def.GAN_GEN2_STATE_CHARACTERISTIC);
-            let key = device.name?.startsWith('AiCube') ? def.GAN_ENCRYPTION_KEYS[1] : def.GAN_ENCRYPTION_KEYS[0];
-            let encrypter = new GanGen2CubeEncrypter(new Uint8Array(key.key), new Uint8Array(key.iv), salt);
-            let driver = new GanGen2ProtocolDriver();
-            conn = await GanCubeClassicConnection.create(device, commandCharacteristic, stateCharacteristic, encrypter, driver);
-            break;
-        } else if (serviceUUID == def.GAN_GEN3_SERVICE) {
-            let commandCharacteristic = await service.getCharacteristic(def.GAN_GEN3_COMMAND_CHARACTERISTIC);
-            let stateCharacteristic = await service.getCharacteristic(def.GAN_GEN3_STATE_CHARACTERISTIC);
-            let key = def.GAN_ENCRYPTION_KEYS[0];
-            let encrypter = new GanGen3CubeEncrypter(new Uint8Array(key.key), new Uint8Array(key.iv), salt);
-            let driver = new GanGen3ProtocolDriver();
-            conn = await GanCubeClassicConnection.create(device, commandCharacteristic, stateCharacteristic, encrypter, driver);
-            break;
-        } else if (serviceUUID == def.GAN_GEN4_SERVICE) {
-            let commandCharacteristic = await service.getCharacteristic(def.GAN_GEN4_COMMAND_CHARACTERISTIC);
-            let stateCharacteristic = await service.getCharacteristic(def.GAN_GEN4_STATE_CHARACTERISTIC);
-            let key = def.GAN_ENCRYPTION_KEYS[0];
-            let encrypter = new GanGen4CubeEncrypter(new Uint8Array(key.key), new Uint8Array(key.iv), salt);
-            let driver = new GanGen4ProtocolDriver();
-            conn = await GanCubeClassicConnection.create(device, commandCharacteristic, stateCharacteristic, encrypter, driver);
-            break;
-        }
+        let profile = generationForService(service.uuid);
+        if (!profile) continue;
+        let commandCharacteristic = await service.getCharacteristic(profile.commandCharacteristic);
+        let stateCharacteristic = await service.getCharacteristic(profile.stateCharacteristic);
+        let transport = await WebBluetoothTransport.create(device, mac, commandCharacteristic, stateCharacteristic);
+        return createGanCubeConnection(
+            transport,
+            createEncrypter(profile.generation, mac, device.name ?? undefined),
+            createDriver(profile.generation)
+        );
     }
 
-    if (!conn)
-        throw new Error("Can't find target BLE services - wrong or unsupported cube device model");
-
-    return conn;
+    throw new Error("Can't find target BLE services - wrong or unsupported cube device model");
 
 }
 
@@ -156,6 +136,7 @@ export type {
 };
 
 export {
-    connectGanCube
+    connectGanCube,
+    extractMAC,
+    getManufacturerDataBytes
 };
-
