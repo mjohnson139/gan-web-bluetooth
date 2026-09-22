@@ -1,6 +1,6 @@
 
 /**
- * Building GAN protocol frames by hand, so the drivers can be tested without a
+ * Building GAN protocol frames by hand, so the drivers can be driven without a
  * cube in the room.
  *
  * `GanProtocolMessageView` reads a message as one long MSB-first bit string and
@@ -8,6 +8,10 @@
  * inverse of that, and it is deliberately written independently rather than by
  * reusing the view — a bug shared by the reader and the writer would cancel out
  * and prove nothing.
+ *
+ * These lived under `test/` until they were needed by a demo app as well. They
+ * are published now, because `SimulatedTransport` without a way to build a
+ * frame is a socket with nothing to plug into it.
  */
 
 class BitWriter {
@@ -115,6 +119,38 @@ function gen2HardwareFrame(name: string, gyroSupported: boolean): Uint8Array {
     return writer.build();
 }
 
+/**
+ * A Gen2 GYRO frame.
+ *
+ * Each quaternion component is a sign bit followed by a 15-bit magnitude scaled
+ * against 0x7FFF; each velocity component is a sign bit and three magnitude
+ * bits. Note the driver's axis convention — it reads w, x, y, z in that order,
+ * which is not the order they are usually written in.
+ */
+function gen2GyroFrame(
+    quaternion: { x: number; y: number; z: number; w: number },
+    velocity: { x: number; y: number; z: number } = { x: 0, y: 0, z: 0 }
+): Uint8Array {
+    var signed15 = (v: number) => {
+        var magnitude = Math.min(Math.round(Math.abs(v) * 0x7FFF), 0x7FFF);
+        return v < 0 ? magnitude | 0x8000 : magnitude;
+    };
+    var signed3 = (v: number) => {
+        var magnitude = Math.min(Math.abs(Math.round(v)), 7);
+        return v < 0 ? magnitude | 0x8 : magnitude;
+    };
+    return new BitWriter(GEN2_FRAME_BYTES)
+        .setBitWord(0, 4, 0x01)
+        .setBitWord(4, 16, signed15(quaternion.w))
+        .setBitWord(20, 16, signed15(quaternion.x))
+        .setBitWord(36, 16, signed15(quaternion.y))
+        .setBitWord(52, 16, signed15(quaternion.z))
+        .setBitWord(68, 4, signed3(velocity.x))
+        .setBitWord(72, 4, signed3(velocity.y))
+        .setBitWord(76, 4, signed3(velocity.z))
+        .build();
+}
+
 const SOLVED_FACELETS = 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB';
 
 export type {
@@ -127,6 +163,7 @@ export {
     SOLVED_FACELETS,
     gen2SolvedFaceletsFrame,
     gen2MoveFrame,
+    gen2GyroFrame,
     gen2BatteryFrame,
     gen2HardwareFrame
 };

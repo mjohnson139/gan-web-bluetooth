@@ -12,7 +12,7 @@ import {
     gen2HardwareFrame,
     gen2MoveFrame,
     gen2SolvedFaceletsFrame
-} from './frames';
+} from '../src/simulation/frames';
 
 const MAC = 'AB:12:34:56:78:9A';
 
