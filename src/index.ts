@@ -5,7 +5,7 @@ export * from './utils';
 
 // The transport seam. Everything below it is platform; everything above it runs
 // anywhere. See `gan-cube-transport.ts` for what that buys.
-export type { GanCubeTransport, RecordedMessage } from './gan-cube-transport';
+export type { GanCubeTransport, GanCubeDisconnectReason, RecordedMessage } from './gan-cube-transport';
 export { SimulatedTransport } from './gan-cube-transport';
 export { createGanCubeConnection, GanCubeTransportConnection } from './gan-cube-connection';
 export { WebBluetoothTransport } from './transports/web-bluetooth';

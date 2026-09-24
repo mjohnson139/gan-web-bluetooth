@@ -1,6 +1,7 @@
 
 import { now, toKociembaFacelets } from './utils';
 import { GanCubeEncrypter } from './gan-cube-encrypter';
+import { GanCubeDisconnectReason } from './gan-cube-transport';
 import { Observable, Subject } from 'rxjs';
 
 /** Command for requesting information about GAN Smart Cube hardware  */
@@ -139,6 +140,10 @@ type GanCubeHardwareEvent = {
  */
 type GanCubeDisconnectEvent = {
     type: "DISCONNECT";
+    /** Why the link went down, when the transport could say. Absent for a
+     *  user-requested disconnect and for transports with no such signal (the
+     *  web transport's `gattserverdisconnected` carries no error). */
+    reason?: GanCubeDisconnectReason;
 };
 
 /** All possible event message types */

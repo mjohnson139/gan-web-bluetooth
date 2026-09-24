@@ -1,7 +1,18 @@
 
-import { GanCubeTransport } from '../gan-cube-transport';
+import { GanCubeDisconnectReason, GanCubeTransport } from '../gan-cube-transport';
 import { fromBase64, toBase64 } from './base64';
 import { BlePlxCharacteristic, BlePlxDevice, BlePlxSubscription } from './ble-plx';
+
+/** Pulls whatever a platform error is willing to say about itself, without
+ *  assuming it is a `BleError` — this transport has no dependency on
+ *  `react-native-ble-plx`'s types, only on what its errors happen to carry. */
+function errorReasonFields(error: unknown): { code?: string | number; message?: string } {
+    if (error && typeof error === 'object') {
+        var e = error as { errorCode?: string | number; message?: string };
+        return { code: e.errorCode, message: e.message };
+    }
+    return {};
+}
 
 /**
  * A transport over `react-native-ble-plx`.
@@ -26,7 +37,7 @@ class NativeBleTransport implements GanCubeTransport {
     private writeWithResponse: boolean;
 
     private messageHandler: ((data: Uint8Array) => void | Promise<void>) | null = null;
-    private disconnectHandler: (() => void) | null = null;
+    private disconnectHandler: ((reason?: GanCubeDisconnectReason) => void) | null = null;
 
     private monitorSubscription: BlePlxSubscription | null = null;
     private disconnectSubscription: BlePlxSubscription | null = null;
@@ -78,21 +89,30 @@ class NativeBleTransport implements GanCubeTransport {
         this.messageHandler = handler;
     }
 
-    onDisconnect(handler: () => void): void {
+    onDisconnect(handler: (reason?: GanCubeDisconnectReason) => void): void {
         this.disconnectHandler = handler;
     }
 
-    private onCharacteristicValue = (error: unknown, characteristic: BlePlxCharacteristic | null): void => {
+    private onCharacteristicValue = async (error: unknown, characteristic: BlePlxCharacteristic | null): Promise<void> => {
         // Removing a subscription does not retract a notification already in
         // flight, so a frame can still arrive after teardown. Decoding it would
         // hand the driver a move the cube did not make on a connection that no
         // longer exists.
         if (this.closed) return;
-        // A monitor reports the link dropping as an error on the subscription
-        // rather than only through `onDisconnected`, so this is a real path to
-        // teardown and not just logging.
         if (error) {
-            this.onDeviceDisconnected();
+            // A monitor error does not by itself mean the link is down — ble-plx
+            // can surface a transient error on this subscription while
+            // `device.isConnected()` still says yes, and the OS-level link
+            // outlives it. Tearing down on every such error was closing sessions
+            // the phone hadn't actually dropped. Only a monitor error on a link
+            // that is genuinely gone is treated as a disconnect; otherwise the
+            // (now-dead) subscription is replaced and the link stays up.
+            var stillConnected = await this.device.isConnected().catch(() => false);
+            if (stillConnected) {
+                this.resubscribeMonitor();
+                return;
+            }
+            this.finish({ source: 'monitor', ...errorReasonFields(error) });
             return;
         }
         var value = characteristic?.value;
@@ -101,12 +121,25 @@ class NativeBleTransport implements GanCubeTransport {
         }
     };
 
-    private onDeviceDisconnected = (): void => {
+    private resubscribeMonitor(): void {
+        this.monitorSubscription?.remove();
+        this.monitorSubscription = this.device.monitorCharacteristicForService(
+            this.serviceUUID,
+            this.stateUUID,
+            this.onCharacteristicValue
+        );
+    }
+
+    private onDeviceDisconnected = (error: unknown): void => {
+        this.finish({ source: 'onDisconnected', ...errorReasonFields(error) });
+    };
+
+    private finish(reason?: GanCubeDisconnectReason): void {
         if (this.closed) return;
         this.closed = true;
         this.removeSubscriptions();
-        this.disconnectHandler?.();
-    };
+        this.disconnectHandler?.(reason);
+    }
 
     private removeSubscriptions(): void {
         this.monitorSubscription?.remove();

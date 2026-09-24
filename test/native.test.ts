@@ -193,6 +193,7 @@ describe('the native transport', () => {
         var disconnect: ((error: unknown, d: BlePlxDevice | null) => void) | null = null;
         var writes: Array<{ value: string; withResponse: boolean }> = [];
         var removed = 0;
+        var monitorSubscribeCount = 0;
         var connected = true;
         var device = {
             id: 'AB:12:34:56:78:9A',
@@ -216,6 +217,7 @@ describe('the native transport', () => {
             },
             monitorCharacteristicForService: (_s: string, _c: string, cb: (error: unknown, c: BlePlxCharacteristic | null) => void) => {
                 monitor = cb;
+                monitorSubscribeCount++;
                 return { remove: () => { removed++; } };
             }
         } as unknown as BlePlxDevice;
@@ -223,10 +225,12 @@ describe('the native transport', () => {
             device,
             writes,
             removedCount: () => removed,
+            monitorSubscribeCount: () => monitorSubscribeCount,
             isConnected: () => connected,
+            setConnected: (value: boolean) => { connected = value; },
             notify: (bytes: Uint8Array) => monitor?.(null, { value: toBase64(bytes) } as BlePlxCharacteristic),
             notifyError: (e: unknown) => monitor?.(e, null),
-            dropLink: () => disconnect?.(new Error('lost'), null)
+            dropLink: (e: unknown = new Error('lost')) => disconnect?.(e, null)
         };
     }
 
@@ -261,15 +265,48 @@ describe('the native transport', () => {
         expect(transport.deviceMAC).toBe('AB:12:34:56:78:9A');
     });
 
-    it('treats a monitor error as the link dropping', async () => {
-        // ble-plx reports a lost connection on the monitor subscription as well
-        // as through onDisconnected, and sometimes only there.
+    it('does not treat a monitor error as a disconnect while the OS link is still up', async () => {
+        // ble-plx can surface a transient error on the monitor subscription
+        // while device.isConnected() still says yes — the whole point of
+        // M1-4d: a non-fatal monitor error must not tear a live session down.
         var fake = fakeDevice();
         var transport = await NativeBleTransport.create(fake.device, 'AB:12:34:56:78:9A', 'svc', writable, 'state-uuid');
         var dropped = 0;
         transport.onDisconnect(() => { dropped++; });
-        fake.notifyError(new Error('device disconnected'));
-        expect(dropped).toBe(1);
+        fake.setConnected(true);
+        await fake.notifyError(new Error('transient'));
+        expect(dropped).toBe(0);
+    });
+
+    it('replaces the monitor subscription after a non-fatal error, so notifications keep arriving', async () => {
+        var fake = fakeDevice();
+        var transport = await NativeBleTransport.create(fake.device, 'AB:12:34:56:78:9A', 'svc', writable, 'state-uuid');
+        var received: Array<Array<number>> = [];
+        transport.subscribe((data) => { received.push(Array.from(data)); });
+        fake.setConnected(true);
+        await fake.notifyError(new Error('transient'));
+        expect(fake.monitorSubscribeCount()).toBe(2);
+        fake.notify(new Uint8Array([0x02, 0x01]));
+        expect(received).toEqual([[0x02, 0x01]]);
+    });
+
+    it('treats a monitor error as a disconnect once the OS link is genuinely gone', async () => {
+        var fake = fakeDevice();
+        var transport = await NativeBleTransport.create(fake.device, 'AB:12:34:56:78:9A', 'svc', writable, 'state-uuid');
+        var reasons: Array<unknown> = [];
+        transport.onDisconnect((reason) => { reasons.push(reason); });
+        fake.setConnected(false);
+        await fake.notifyError(new Error('device disconnected'));
+        expect(reasons).toEqual([{ source: 'monitor', code: undefined, message: 'device disconnected' }]);
+    });
+
+    it('carries the onDisconnected error onto the disconnect reason', async () => {
+        var fake = fakeDevice();
+        var transport = await NativeBleTransport.create(fake.device, 'AB:12:34:56:78:9A', 'svc', writable, 'state-uuid');
+        var reasons: Array<unknown> = [];
+        transport.onDisconnect((reason) => { reasons.push(reason); });
+        fake.dropLink({ errorCode: 201, message: 'Device disconnected' });
+        expect(reasons).toEqual([{ source: 'onDisconnected', code: 201, message: 'Device disconnected' }]);
     });
 
     it('reports a dropped link exactly once', async () => {
@@ -278,7 +315,8 @@ describe('the native transport', () => {
         var dropped = 0;
         transport.onDisconnect(() => { dropped++; });
         fake.dropLink();
-        fake.notifyError(new Error('and again'));
+        fake.setConnected(false);
+        await fake.notifyError(new Error('and again'));
         expect(dropped).toBe(1);
     });
 
