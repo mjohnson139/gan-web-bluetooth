@@ -3,7 +3,7 @@ import { Subject } from 'rxjs';
 
 import { now } from './utils';
 import { GanCubeEncrypter } from './gan-cube-encrypter';
-import { GanCubeTransport } from './gan-cube-transport';
+import { GanCubeDisconnectReason, GanCubeTransport } from './gan-cube-transport';
 import {
     GanCubeCommand,
     GanCubeConnection,
@@ -88,10 +88,10 @@ class GanCubeTransportConnection implements GanCubeConnection, GanCubeRawConnect
         }
     };
 
-    onDisconnect = (): void => {
+    onDisconnect = (reason?: GanCubeDisconnectReason): void => {
         if (this.closed) return;
         this.closed = true;
-        this.events$.next({ timestamp: now(), type: 'DISCONNECT' });
+        this.events$.next({ timestamp: now(), type: 'DISCONNECT', reason });
         this.events$.complete();
     };
 

@@ -13,6 +13,23 @@
  * because every platform does them differently and none of them can be expressed
  * in terms of the others.
  */
+/**
+ * Whatever a platform transport could say about a disconnect it detected
+ * itself, rather than one the app asked for.
+ */
+type GanCubeDisconnectReason = {
+    /** Which channel reported the drop. A native transport can see it on the
+     *  state-characteristic monitor, on the device's own disconnect callback,
+     *  or both — `NativeBleTransport` reports whichever one actually tore the
+     *  link down. */
+    source: 'monitor' | 'onDisconnected';
+    /** The platform error's code, if it exposed one (for example ble-plx's
+     *  `BleError#errorCode`). */
+    code?: string | number;
+    /** The platform error's message, if any. */
+    message?: string;
+};
+
 interface GanCubeTransport {
 
     /** Advertised device name, e.g. `GANicC1a2b3`. */
@@ -47,8 +64,12 @@ interface GanCubeTransport {
      * Register the handler for the link dropping without us asking — the cube
      * being switched off, walking out of range, or the OS reclaiming the
      * connection. Called once, by the connection, during construction.
+     *
+     * `reason` is whatever the transport could learn about why; a transport
+     * with no such signal (the web transport's `gattserverdisconnected`) calls
+     * the handler with none.
      */
-    onDisconnect(handler: () => void): void;
+    onDisconnect(handler: (reason?: GanCubeDisconnectReason) => void): void;
 
     /** Tear the link down. Must be safe to call more than once. */
     disconnect(): Promise<void>;
@@ -96,7 +117,7 @@ class SimulatedTransport implements GanCubeTransport {
     readonly written: Array<Uint8Array> = [];
 
     private messageHandler: ((data: Uint8Array) => void | Promise<void>) | null = null;
-    private disconnectHandler: (() => void) | null = null;
+    private disconnectHandler: ((reason?: GanCubeDisconnectReason) => void) | null = null;
     private timers: Array<ReturnType<typeof setTimeout>> = [];
     private closed = false;
 
@@ -175,6 +196,7 @@ class SimulatedTransport implements GanCubeTransport {
 
 export type {
     GanCubeTransport,
+    GanCubeDisconnectReason,
     RecordedMessage
 };
 
