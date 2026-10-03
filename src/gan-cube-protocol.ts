@@ -709,12 +709,33 @@ class GanGen3ProtocolDriver implements GanProtocolDriver {
  *  - GAN12 ui Maglev
  *  - GAN14 ui FreePlay
  */
+/**
+ * How long a Gen4 FACELETS event that is ahead of the last move report waits
+ * before the driver asks the cube for its move history. The cube can send its
+ * state before a move report that is still on its way (seen 36 to 137 ms on a
+ * GANi4), so ask a little later and skip it if the report arrived.
+ */
+const GEN4_EARLY_HISTORY_SETTLE_MS = 100;
+/** Wait before asking again when the cube did not answer a history request. */
+const GEN4_EARLY_HISTORY_RETRY_MS = 250;
+/** History requests per missing serial window, the first one included. */
+const GEN4_EARLY_HISTORY_MAX_REQUESTS = 3;
+/** A FACELETS event further ahead than this is not a lost report or two. */
+const GEN4_EARLY_HISTORY_MAX_GAP = 16;
+/** A move report this many serials behind the last delivered one, or fewer, is a late copy. */
+const GEN4_STALE_MOVE_WINDOW = 16;
+
 class GanGen4ProtocolDriver implements GanProtocolDriver {
 
     private serial: number = -1;
     private lastSerial: number = -1;
     private lastLocalTimestamp: number | null = null;
     private moveBuffer: GanCubeEvent[] = [];
+
+    // State of the early history request, see scheduleEarlyHistoryCheck()
+    private earlyHistoryTimer: ReturnType<typeof setTimeout> | null = null;
+    private earlyHistoryWindow: string | null = null;
+    private earlyHistoryRequests = 0;
 
     // Used to store partial result acquired from hardware info events
     private hwInfo: { [key: number]: string } = {};
@@ -832,6 +853,66 @@ class GanGen4ProtocolDriver implements GanProtocolDriver {
         }
     }
 
+    /**
+     * True when the cube's state is a few serials past the last delivered move
+     * and no later move report is waiting in the buffer, i.e. the cube made a
+     * move whose report never arrived and nothing else will ask for it. With a
+     * non-empty buffer evictMoveBuffer() has already asked, on the move that
+     * revealed the gap.
+     */
+    private isMoveReportMissing(): boolean {
+        if (this.lastSerial == -1 || this.moveBuffer.length > 0)
+            return false;
+        if (this.serial == 0) // Same firmware constraint as checkIfMoveMissed()
+            return false;
+        let diff = (this.serial - this.lastSerial) & 0xFF;
+        return diff > 0 && diff <= GEN4_EARLY_HISTORY_MAX_GAP;
+    }
+
+    /**
+     * Ask for the cube's move history soon after a FACELETS event shows a move
+     * report is missing, instead of waiting for the next move or for more than
+     * 500 ms without moves. A GANi4 reports a slice turn as two face turns and
+     * often loses the second report; its periodic state arrives with the serial
+     * of the lost one well before the person's next turn.
+     *
+     * At most one timer is pending, and a missing serial window (last delivered
+     * serial to the cube's serial) gets at most GEN4_EARLY_HISTORY_MAX_REQUESTS
+     * requests however many FACELETS events repeat it. Each run checks again
+     * whether the report is still missing, so a report that was only in flight,
+     * or a history response, cancels the rest.
+     */
+    private scheduleEarlyHistoryCheck(conn: GanCubeRawConnection) {
+        if (this.earlyHistoryTimer != null || !this.isMoveReportMissing())
+            return;
+        let window = `${this.lastSerial}:${this.serial}`;
+        if (window != this.earlyHistoryWindow) {
+            this.earlyHistoryWindow = window;
+            this.earlyHistoryRequests = 0;
+        }
+        if (this.earlyHistoryRequests >= GEN4_EARLY_HISTORY_MAX_REQUESTS)
+            return;
+        let delay = this.earlyHistoryRequests == 0 ? GEN4_EARLY_HISTORY_SETTLE_MS : GEN4_EARLY_HISTORY_RETRY_MS;
+        this.earlyHistoryTimer = setTimeout(() => {
+            this.earlyHistoryTimer = null;
+            this.runEarlyHistoryCheck(conn);
+        }, delay);
+    }
+
+    private runEarlyHistoryCheck(conn: GanCubeRawConnection) {
+        if (!this.isMoveReportMissing())
+            return;
+        let window = `${this.lastSerial}:${this.serial}`;
+        if (window != this.earlyHistoryWindow) {
+            this.earlyHistoryWindow = window;
+            this.earlyHistoryRequests = 0;
+        }
+        this.earlyHistoryRequests++;
+        // GATT write errors are swallowed by requestMoveHistory(); the retry below covers them too
+        this.checkIfMoveMissed(conn);
+        this.scheduleEarlyHistoryCheck(conn);
+    }
+
     async handleStateEvent(conn: GanCubeRawConnection, eventMessage: Uint8Array): Promise<GanCubeEvent[]> {
 
         var timestamp = now();
@@ -848,7 +929,17 @@ class GanGen4ProtocolDriver implements GanProtocolDriver {
 
                 this.lastLocalTimestamp = timestamp;
                 let cubeTimestamp = msg.getBitWord(16, 32, true);
-                let serial = this.serial = msg.getBitWord(48, 16, true);
+                let serial = msg.getBitWord(48, 16, true);
+
+                // A report of a move already delivered (rebuilt from the history before
+                // the report itself arrived) or already waiting in the buffer is a late
+                // copy. Pushing it would deliver the move twice, or leave it on the
+                // buffer head behind lastSerial, where it can never be evicted.
+                if (((this.lastSerial - serial) & 0xFF) < GEN4_STALE_MOVE_WINDOW
+                    || this.moveBuffer.some(e => e.type == "MOVE" && e.serial == serial)) {
+                    return cubeEvents;
+                }
+                this.serial = serial;
 
                 let direction = msg.getBitWord(64, 2);
                 let face = [2, 32, 8, 1, 16, 4].indexOf(msg.getBitWord(66, 6));
@@ -909,6 +1000,10 @@ class GanGen4ProtocolDriver implements GanProtocolDriver {
                 // Debounce the facelet event if there are active cube moves
                 if (this.lastLocalTimestamp != null && (timestamp - this.lastLocalTimestamp) > 500) {
                     await this.checkIfMoveMissed(conn);
+                } else if (this.lastLocalTimestamp != null) {
+                    // Moves are active, but the state already says a move report is missing:
+                    // ask shortly instead of waiting for the next move to reveal the gap.
+                    this.scheduleEarlyHistoryCheck(conn);
                 }
             }
 
